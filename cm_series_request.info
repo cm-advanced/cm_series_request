@@ -1,0 +1,12 @@
+name = "CMA Series Request"
+
+scripts[] = cm_series_request.js
+stylesheets[all][] = mail.css
+
+description = "A module that handles the Series Request related hooks"
+package = Community Media Advanced
+version = 7.x-1.0
+project = "cm_series_request"
+project_status_url = https://github.com/cm-advanced/cm_series_request
+
+core = 7.x

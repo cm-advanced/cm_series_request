@@ -1,0 +1,82 @@
+diff --git a/sites/all/modules/custom/cm_series_request/cm_series_request.module b/sites/all/modules/custom/cm_series_request/cm_series_request.module
+index 11d5802..7ede60a 100644
+--- a/sites/all/modules/custom/cm_series_request/cm_series_request.module
++++ b/sites/all/modules/custom/cm_series_request/cm_series_request.module
+@@ -23,7 +23,7 @@ define ("CM_AIRINGS_SCHEDULED_VIEW",
+     'airings_airings_scheduled');   
+ define ("CM_SERIES_REQUEST_SERIES_AIRING_TYPE_TID", 820);
+ define ("CM_SERIES_REQUEST_SPECIAL_AIRING_TYPE_TID", 821);
+-define ("SERIES_REQUEST_MAX_ACTIVE_FOR_PROJECT", 1);
++define ("SERIES_REQUEST_MAX_ACTIVE_FOR_PROJECT_PER_SEASON", 1);
+ 
+ /**                          
+  * Implements hook_init().
+@@ -1083,22 +1083,19 @@ function cm_series_request_node_validate($node, $form, &$form_state) {
+         $project_nid = 
+           $node->field_request_project[LANGUAGE_NONE][0]['target_id'];
+         
+-      // if user does not have series request manage permissions, they 
+-      // cannot create more than one active series request per project
+-  
+-/**********  REMOVE VALIDATION FOR NOW
+-      // FIXME LOTTIE: need to include a season check as well so that persons
+-      // can create series requests for the same project across seasons
++    // if user does not have series request manage permissions, they 
++    // cannot create more than one active series request 
++    // per project per season
+     if (cm_series_request_count_for_project($project_nid) >= 
+-  SERIES_REQUEST_MAX_ACTIVE_FOR_PROJECT) {
+-      if(!cm_series_request_access('create')) {
+-  $error = t("Sorry, you are not allowed to create more than one active "
+-      . "series request per project. Your changes have not been saved.");
++  SERIES_REQUEST_MAX_ACTIVE_FOR_PROJECT_PER_SEASON) {
++      //if(!cm_series_request_access('create')) {
++  $error = t("Sorry, you are not allowed to create more than one active series "
++      . "request per project per season. Your changes have not been saved.");
+   form_set_error('form', $error);
+ 
+-      }
++      //}
+     }
+-REMOVE VALIDATION FOR NOW ***********************/
++
+         
+ 
+     // project must be of type series to create a series request 
+@@ -2321,15 +2318,23 @@ function cm_series_request_remove_not_season_start_date($row) {
+  * @return int
+  */
+ function cm_series_request_count_for_project($project_nid) {
++  
++    $next_season = timespan_next(CM_SERIES_REQUEST_SEASON_TIMESPAN_NAME);
++    $season_start = date('Y-m-d', strtotime($next_season['start']));
++    $season_start_time
++    
+     $sql = "
+         SELECT count(*)
+             FROM field_data_field_request_project as ref
+             INNER JOIN field_data_field_project_status status
+-                    ON ref.field_request_project_target_id = status.entity_id   
++                    ON ref.field_request_project_target_id = status.entity_id 
++            INNER JOIN field_data_field_season_request_dates request_dates
++                    ON ref.field_request_project_target_id = request_dates.entity_id             
+             WHERE ref.field_request_project_target_id = :project_nid
+                     and ref.bundle = :bundle
+                     and ref.entity_type = :type
+                     and status.field_project_status_value = :project_status
++                    and request_dates.field_season_request_dates_value = :season_start
+     ";
+  
+     $args = array(
+@@ -2337,9 +2342,11 @@ function cm_series_request_count_for_project($project_nid) {
+       ':bundle' => 'series_request',
+       ':type' => 'node',
+       ':project_status' => 'Active',
++      ':season_start' => $season_start,
+     );
+ 
+     $result = db_query($sql, $args);
++dpm($result, 'result');
+     $count = $result->fetchField();
+     return $count;
+ }

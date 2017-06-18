@@ -1,0 +1,2657 @@
+<?php
+define ("CM_SERIES_REQUEST_TIMEZONE_SHIFT", TRUE);
+define ("CM_SERIES_REQUEST_POST_PROCESS_MODULE", "pcm_airing");
+define ("CM_SERIES_REQUEST_POST_PROCESS_FUNCTION", "series_post_process");
+define ("CM_SERIES_REQUEST_SUBMIT_STATUS", "CM_SR_SS");
+define ("CM_SERIES_REQUEST_UPCOMING_AIRINGS_STATUS", "CM_SR_AIRINGS_DISPLAY");
+define ("CM_SERIES_REQUEST_SERIES_PROJECT_TYPE_TID", 1);
+define ("CM_SERIES_REQUEST_STUDIO_START_TIME", 0);
+define ("CM_SERIES_REQUEST_STUDIO_END_TIME", 24);
+define ("CM_SERIES_REQUEST_MONTHLY_TID", 765);
+define ("CM_SERIES_REQUEST_BI_MONTHLY_TID", 764);
+define ("CM_SERIES_REQUEST_WEEKLY_TID", 763);
+define ("CM_SERIES_REQUEST_SITE_ADMIN_ROLE", 'administrator');
+define ("CM_SERIES_REQUEST_SYS_ADMIN_ROLE", 'System Admin');
+define ("CM_SERIES_REQUEST_PROGRAMMING_STAFF_ROLE", 'Staff - Programming');
+define ("CM_SERIES_REQUEST_SERIES_RENEWED_ROLE", 'Series Renewed');
+define ("CM_SERIES_REQUEST_SEASON_TIMESPAN_NAME", 'pcmseason');
+define ("CM_SERIES_REQUEST_SCHEDULED_SLOTS_VIEW",
+	'series_request_scheduled_slots');
+define ("CM_SERIES_REQUEST_SCHEDULED_EMAIL_VIEW",
+  'series_request_airings_scheduled');
+define ("CM_AIRINGS_SCHEDULED_VIEW",
+    'airings_airings_scheduled');   
+define ("CM_SERIES_REQUEST_SERIES_AIRING_TYPE_TID", 820);
+define ("CM_SERIES_REQUEST_SPECIAL_AIRING_TYPE_TID", 821);
+define ("SERIES_REQUEST_MAX_ACTIVE_FOR_PROJECT", 1);
+
+/**                          
+ * Implements hook_init().
+ *
+ * Loads all the include files
+ */
+function cm_series_request_init() {
+  drupal_add_css(drupal_get_path('module', 'cm_series_request') .
+                 '/cm_series_request.css');
+  module_load_include('inc', 'cm_series_request', 'includes/email');
+  module_load_include('inc', 'cm_series_request', 'includes/form');
+  module_load_include('inc', 'cm_series_request', 'includes/misc');
+}
+
+function cm_series_request_menu() {
+  $items['admin/programming/settings'] = 
+    array(
+	  'title' => 'Programming Settings',
+	  'description' => 'A page for setting programming settings',
+	  'page callback' => 'drupal_get_form',
+	  'page arguments' => array('cm_series_request_settings_form'),
+	  'access arguments' => array('access administration menu'),
+	  'type' => MENU_CALLBACK,
+	  );
+
+  $items['admin/programming/series_requests/scheduled'] = 
+    array(
+	  'title' => 'Series Requests: Approved Schedule',
+	  'description' => 'Schedule Block of All Approved Series Requests',
+	  'page callback' => 'cm_series_request_approved_series_requests',
+	  'access arguments' => array('access administration menu'),
+	  'type' => MENU_CALLBACK,
+	  );
+    
+   $items['admin/programming/series-request/scheduled-email-text'] = 
+    array(
+	  'title' => 'Series Requests: Scheduled Confirmation Email Text',
+	  //'description' => 'Email Text for Confirmation of Scheduled Series Requests',
+	  'page callback' => 'drupal_get_form',
+	  'page arguments' => array('cm_series_request_schedule_confirmation_email_admin_form'),
+	  'access arguments' => array('access administration menu'),    
+    'type' => MENU_CALLBACK,
+	  );
+
+   $items['admin/programming/series-request/submitted-email-text'] = 
+    array(
+	  'title' => 'Series Requests: Submitted Request Email Text',
+	  //'description' => 'Email Text Confirmation for Submitted Series Requests',
+	  'page callback' => 'drupal_get_form',
+	  'page arguments' => array('cm_series_request_submitted_confirmation_email_admin_form'),
+	  'access arguments' => array('access administration menu'),    
+    'type' => MENU_CALLBACK,
+	  );    
+
+  $items['admin/programming/refresh_node'] = 
+    array(
+	  'title' => 'Refresh Node',
+	  'description' => 'DISABLE THIS MENU ITEM',
+	  'page callback' => 'cm_series_request_refresh_node_edit_form',
+	  'access arguments' => array('access administration menu'),
+	  'type' => MENU_CALLBACK,
+	  );
+
+  $items['admin/programming/series_request/ajax_times'] = 
+    array(
+	  'title' => t('Series Request Ajax'),
+	  'page callback' => 'cm_series_request_ajax_times',
+	  'delivery callback' => 'drupal_json_output',
+	  'access arguments' => array('access content'),
+	  'type' => MENU_CALLBACK,
+	  );
+  return $items;
+}
+
+/**
+  * Implementation of hook_permission()
+ */
+function cm_series_request_permission() {
+  $permissions = array(
+    'manage cm_series_request' => array(
+      'title' => t('Manage Series Requests'),
+      'description' => t('Allows users to manage series requests.'),
+      'restrict access' => TRUE,
+    ),
+  );
+
+  return $permissions;  
+}
+
+/**
+ * Access callback for project.
+ *
+ * @param $op
+ *   $node->op - operation
+ * @return
+ *   TRUE (access permitted) or FALSE (access denied)
+ */
+function cm_series_request_access($op) {
+
+  global $user;
+
+  if (!isset($account)) {
+    $account = $user;
+  }
+   
+  switch ($op) {
+    case 'create':
+      return user_access('manage cm_series_request', $account);
+  }
+}
+
+function cm_series_request_get_days_array() {
+  $days = array('Monday', 'Tuesday', 'Wednesday', 'Thursday', 
+		'Friday', 'Saturday', 'Sunday');
+
+
+  $next_season = timespan_next(CM_SERIES_REQUEST_SEASON_TIMESPAN_NAME);
+  $season_name = cm_series_request_get_season_name($next_season);
+  $first_dow = date('l', strtotime($next_season['start']));
+  
+  $ret = array();
+  $started = FALSE;
+  foreach ($days as $day) {
+    if ($day == $first_dow) {
+      $started = TRUE;
+    }
+    if ($started) {
+      unset($days[$day]);
+      $ret[$day] = $day;
+    }
+  }
+  foreach ($days as $day) {
+    unset($days[$day]);
+    $ret[$day] = $day;
+  }
+  return $ret;
+}
+
+function cm_series_request_approved_series_requests() {
+  ctools_add_js('collapsible-div');
+  ctools_add_css('collapsible-div');
+
+  $slots = cm_series_request_slots();
+
+  $types = array(
+		 'channel' => array(
+				    'name'=>'Schedule by Channel',
+				    ), 
+		 'source' => array(
+				   'name'=>'Schedule by Live Source',
+				   ), 
+
+		 );
+  $days = cm_series_request_get_days_array();
+
+  $class = 'cm_series_request';
+    $type_rows = array();  
+    $type_data = array();
+  foreach ($types as $type=>$type_info) {
+    $type_slots = $slots[$type];
+    $collapse_day_rows = array();
+    foreach ($days as $day) {
+      $day_data = array();
+
+      foreach ($type_slots as $tid=>$day_slots) {
+	$channel = ($type == 'channel') ? $tid : NULL;
+	$source = ($type == 'source') ? $tid : NULL;
+	$max = (CM_SERIES_REQUEST_STUDIO_END_TIME - 
+		CM_SERIES_REQUEST_STUDIO_START_TIME) * 2 + 
+	  CM_SERIES_REQUEST_STUDIO_START_TIME;
+
+	$hour_counter = CM_SERIES_REQUEST_STUDIO_START_TIME;
+
+	$counter = 0;
+	$slot_rows = array();
+	$extended_overlaps = array();
+	for($i = CM_SERIES_REQUEST_STUDIO_START_TIME ; $i < $max; $i++) {
+	  $slot_data = array();
+	  $counter++;
+
+	  $time = ($hour_counter > 12) ? $hour_counter - 12 : $hour_counter;
+	  $time .= ($i%2 == 1) ? ":30" : ":00";
+	  $time .= ($hour_counter >= 12) ? "pm" : "am";
+          if ($hour_counter == 0) {
+             $time = "12" . substr($time, 1, (strlen($time)));
+          }
+	  $hour_counter = ($i % 2 == 0) ? $hour_counter : $hour_counter + 1;
+
+	  $overlaps = array();
+	  $overlap = cm_series_request_get_overlap_request($slots, $source, 
+							   $channel, $day, 
+							   $time);
+	  if ($overlap) {
+	    $overlaps['all'] = $overlap;
+	    $has_all = TRUE;
+	    $interval_overlaps = array();
+	    $old_nid = $new_nid = 0;
+	    for ($j = 1; $j <= 4; $j++) {
+	      $interval_week = $day . " -- Week ". $j;
+	      $overlap = cm_series_request_get_overlap_request($slots, 
+							       $source, 
+							       $channel, 
+							       $interval_week, 
+							       $time);
+	      
+	      if ($overlap) {
+		$new_nid = $overlap['nid'];
+		$interval_overlaps[$j] = $overlap;
+	      }
+	      else {
+		$has_all = FALSE;
+	      }
+
+	      if ($new_nid && $old_nid && $new_nid!=$old_nid) {
+		$has_all = FALSE;
+	      }
+	      $old_nid = $new_nid;
+	    }
+	    if (!$has_all) {
+	      $overlaps = $interval_overlaps;
+	    }
+	  }
+
+	  if (isset($extended_overlaps[$i])) {
+	    foreach($extended_overlaps[$i] as $ex_index => $ext_ov) {
+	      $overlaps[$ex_index] = isset($overlaps[$ex_index]) ?
+		$overlaps[$ex_index] : array();
+	      $ext_ov['extended'] = TRUE;
+	      $overlaps[$ex_index] = $ext_ov;
+	    }
+	    unset($extended_overlaps[$i]);
+	  }
+	  
+	  $data = "";
+	  ksort($overlaps);
+	  foreach($overlaps as $index => $overlap) {
+	    $dest = 
+	      "admin/programming/series-requests/series-requests-approved";
+	    $title = $overlap['title'];
+	    if (strlen($title) > 25) {
+	      $title = substr($title,   0, 25)."...";
+	    }
+	    $title = l($title, "node/".$overlap['nid']."/edit",
+		       array('query' => array('destination'=>$dest)));
+	    if ($index != 'all') {
+	      $title .= "($index)";
+	    }
+	    
+	    $data .= "<h4>".$title."</h4>";
+
+	    if (!isset($overlap['extended']) || !$overlap['extended']) {
+	      $runtime = $overlap['runtime'];
+	      $extended_counter = 
+		cm_series_request_get_extended_counter($runtime);
+
+	      for ($k = 1; $k <= $extended_counter; $k++) {
+		$future_index = $k+$i;
+		$extended_overlaps[$future_index] =
+		  (isset($extended_overlaps[$future_index])) ?
+		  $extended_overlaps[$future_index] :
+		  array();
+		$extended_overlaps[$future_index][$index] = 
+		  $overlap;
+	      }
+	    }
+	  }
+	  if (!$data) {
+	    $data .= "<h4>&nbsp;</h4>";
+	  }
+	  $data = "<i>$time</i></br>".$data;
+
+
+	  $overlaps = array();
+	  $overlap = NULL;
+	  
+	  $slot_data[] = array('data' => $data);
+	  $slot_rows[] = $slot_data;
+	}      
+	if ($type == 'source') {
+	  $my_field = field_info_field('field_live_source');
+	  $allowed_values= list_allowed_values($my_field);
+	  $name = $allowed_values[$tid];
+	}
+	else {
+	  $term = taxonomy_term_load($tid);
+	  $name = $term && isset($term->name) ? $term->name : "";
+	}
+
+	$table = theme('table', array('header' => array($name . ": " . $day),
+				      'rows' => $slot_rows,
+				      'attributes' => array()));
+	$day_data[] = array('data' => $table);	
+      }
+      $day_rows[] = $day_data;
+      $table = theme('table', array('header' => array(),
+				    'rows' => $day_rows,
+				    'attributes' => array()));
+      $options = array(
+		       'handle' => "<h2>$day</h2>",
+		       'content' => $table,
+		       'collapsed' => TRUE,
+		       );
+      $collapse_day_data[] = array('data' =>
+				   theme('ctools_collapsible', $options));
+      $collapse_day_rows[] = $collapse_day_data;
+      $collapse_day_data = array();
+      $day_rows = array();
+    }
+    $table = theme('table', array('header' => array(),
+				  'rows' => $collapse_day_rows,
+				    'attributes' => array()));
+    $collapse_day_rows = array();
+    
+    $options = array(
+		     'handle' => "<h2>".$type_info['name']."</h2>",
+		     'content' => $table,
+		     'collapsed' => FALSE,
+		     );
+    $table = theme('ctools_collapsible', $options);
+    $type_data[] = array('data' => $table);
+    $type_rows[] = $type_data;
+    $type_data = array();
+  }
+  $table =  theme('table',
+		  array('header' => array(),
+			'rows' => $type_rows,
+			'attributes' => 
+			array()));
+
+  
+  return $table;
+}
+function cm_series_request_refresh_node_edit_form() {
+  $nid = arg(3);
+  drupal_goto("node/".$nid."/edit", array('fragment' => 'status'));
+  return;
+}
+
+//------------------------------------------------------------------------------
+///// POSTSAVE SEND EMAIL NOTIFICATION TO PRODUCER OF SUBMITTED SERIES REQUEST
+//------------------------------------------------------------------------------
+
+/**
+ * Implements hook_node_insert().
+ *
+ * This is the hook after an node is inserteed into the db. It will call the
+ * cm_series_request_postsave function for all actions that need to be 
+ * performed for inserting and updating.
+ * 
+ */
+function cm_series_request_node_insert($node) {
+  if ($node->type == 'series_request') {
+    $result = cm_series_request_submitted_producer_notification_send($node);
+  }  
+}
+
+function cm_series_request_node_update($node) {
+  if ($node->type == 'series_request') {
+    // for testing
+    //$result = cm_series_request_submitted_producer_notification_send($node);
+  }  
+}
+
+/*
+ * Return times that are avaialble slots
+ * Called from cm_series_request.js
+ *  
+ */
+function cm_series_request_ajax_times() {
+  $source = arg(4);
+  $channel = arg(5);
+  $day = arg(6);
+  $request_time = arg(7);
+  $current_runtime = arg(8);
+  return cm_series_request_get_start_time_dropdown_values($source, 
+							  $channel, 
+							  $day,
+							  $request_time,
+                $current_runtime);
+}
+
+function cm_series_request_get_start_time_dropdown_values($source, 
+							  $channel, 
+							  $day, 
+							  $request_time = '',
+                $current_runtime) {
+
+  $ret = array();
+  $available_times = array();
+  $slots = cm_series_request_slots();
+  $ok_blocks = array();
+  $neg_blocks = array();
+  $max = (CM_SERIES_REQUEST_STUDIO_END_TIME - 
+	  CM_SERIES_REQUEST_STUDIO_START_TIME) * 2 + 
+    CM_SERIES_REQUEST_STUDIO_START_TIME;
+
+  $hour_counter = CM_SERIES_REQUEST_STUDIO_START_TIME;
+
+  $counter = 0;
+  for($i = CM_SERIES_REQUEST_STUDIO_START_TIME ; $i < $max; $i++) {
+    $counter++;
+    $time = ($hour_counter > 12) ? $hour_counter - 12 : $hour_counter;
+    $time .= ($i%2 == 1) ? ":30" : ":00";
+    $time .= ($hour_counter >= 12) ? "pm" : "am";
+    if ($hour_counter == 0) {
+       $time = "12" . substr($time, 1, (strlen($time)));
+    }
+    $hour_counter = ($i % 2 == 0) ? $hour_counter : $hour_counter + 1;
+    
+    // staff can override and therefore time will not be filtered in any
+    // fashion - all times will show so user is responsible
+    $allow_all_times_mode = filter_input(INPUT_GET, 'override');
+    
+    if (!$allow_all_times_mode) {
+      $overlap = cm_series_request_get_overlap_request($slots, $source, 
+						       $channel, $day, 
+						       $time);
+    }
+    if ($overlap) {
+      $runtime = $overlap['runtime'];
+      $array_var_name = ($time == $request_time) ?
+	'ok_blocks' : 'neg_blocks';
+      ${$array_var_name}[] = date('g:ia', strtotime($time));
+
+      $extended_counter = cm_series_request_get_extended_counter($runtime);
+      for ($j = $extended_counter; $j > 0; $j--) {
+	${$array_var_name}[] = date('g:ia', strtotime($time) + 30*$j*60);
+      }
+    }
+    
+    if (!in_array($time, $neg_blocks)) {
+      $available_times[$time] = $time;
+    }
+  }
+
+//dpm($allow_all_times_mode, 'override');
+//dpm($available_times, 'times');
+  
+//dpm($allow_all_times_mode, 'override');
+//dpm($available_times, 'times');
+  // avaialble time slots should reflect the runtime for this request
+  // $current_runtime or testing: 5:00=834; 28:30=826; 58:30=827; 1:28:30=828
+  $extended_counter = cm_series_request_get_extended_counter($current_runtime);
+  foreach ($available_times as $current_time) {
+    // skip if override and let the user be responsible for this 
+    if ($allow_all_times_mode) {
+      $ret[] = array('time_id' => $current_time, 'time' => $current_time);
+      continue;
+    }
+    else {
+      $ok = 1;
+      for ($j = $extended_counter; $j > 0; $j--) {
+        $extended_time = date('g:ia', strtotime($current_time) + 30*$j*60);
+        
+        if(!in_array($extended_time, $available_times)) {
+          $ok = NULL;
+          unset($available_times[$current_time]);      
+          break;
+        }
+      }
+      if ($ok) {
+        $ret[] = array('time_id' => $current_time, 'time' => $current_time);
+      }
+    }
+  }
+  return $ret;
+}
+
+function cm_series_request_get_overlap_request($slots, $source, $channel,
+					       $day, $time) {
+ 
+  if ($channel && 
+      isset($slots['channel'][$channel]) &&
+      isset($slots['channel'][$channel][$day]) &&
+      isset($slots['channel'][$channel][$day][$time]) &&
+      $slots['channel'][$channel][$day][$time]) {
+    return $slots['channel'][$channel][$day][$time];
+  }
+  else if ($source &&
+	   isset($slots['source'][$source]) &&
+	   isset($slots['source'][$source][$day]) &&
+	   isset($slots['source'][$source][$day][$time]) &&
+	   $slots['source'][$source][$day][$time]) {
+    return $slots['source'][$source][$day][$time];
+  }
+  return NULL;
+}
+function cm_series_request_slots() {
+  
+  $view = views_get_view(CM_SERIES_REQUEST_SCHEDULED_SLOTS_VIEW);
+  if (!$view) {
+    drupal_set_message("Error Code 23289: Missing view:".
+                       CM_SERIES_REQUEST_SCHEDULED_SLOTS_VIEW, 'error');
+    return;
+  }
+  $next_season = timespan_next(CM_SERIES_REQUEST_SEASON_TIMESPAN_NAME);
+  $season_start = date('Y-m-d', strtotime($next_season['start']));
+  $view->set_arguments(array($season_start));
+  $view->execute();
+  $results = $view->result;
+
+  $channel_slots = array();
+  $source_slots = array();
+  foreach($results as $result) {
+    if (!isset($result->field_field_airing_channel[0])) {
+      continue;
+    }
+    $channel = $result->field_field_airing_channel[0]['raw']['tid'];
+    $channel_slots[$channel] = isset($channel_slots[$channel]) ? 
+      $channel_slots[$channel] : array();
+
+    $source = ($result->field_field_live_source) ?
+      $result->field_field_live_source[0]['raw']['value'] :
+      NULL;
+    if ($source) {
+      $source_slots[$source] = isset($source_slots[$source]) ? 
+	$source_slots[$source] : array();
+    }
+    if (!isset($result->field_field_start_day[0])) {
+      continue;
+    }
+    $day_value = $result->field_field_start_day[0]['raw']['value'];
+    $frequency = $result->field_field_series_frequency[0]['raw']['tid'];
+
+    $days = array();
+    $days[] = $day_value;
+    $day = strpos($day_value, 'Week') ?
+      substr($day_value, 0,  strpos($day_value, ' -- Week')) : $day_value;
+
+    //CHECK TO SEE IF DAY HAS WEEK VALUE
+    if (!strpos($day_value, 'Week')) {
+      $days[] = $day." -- Week 1";
+      $days[] = $day." -- Week 2";
+      $days[] = $day." -- Week 3";
+      $days[] = $day." -- Week 4";
+    }
+    else {
+      $days[] = $day;
+      if ($frequency == CM_SERIES_REQUEST_BI_MONTHLY_TID) {
+	if (strpos($day_value, 'Week 1')) {
+	  $days[] = $day." -- Week 3";
+	}
+	else if (strpos($day_value, 'Week 2')) {
+	  $days[] = $day." -- Week 4";
+	}
+      }
+    }
+  
+    if ($source) {
+      $source_slots[$source][$day] = isset($source_slots[$source][$day]) ? 
+	$source_slots[$source][$day] : array();
+    }
+
+    $channel_slots[$channel][$day] = isset($channel_slots[$channel][$day]) ? 
+      $channel_slots[$channel][$day] : array();
+
+    $time = isset($result->field_field_start_time[0]) ?
+      $result->field_field_start_time[0]['raw']['value'] : NULL;
+    if ($time) {
+      $runtime = $result->field_field_runtime_default[0]['raw']['tid'];
+      $next_season = timespan_next(CM_SERIES_REQUEST_SEASON_TIMESPAN_NAME);
+      $season_name = cm_series_request_get_season_name($next_season);
+      $title = str_replace(' - '.$season_name, '', 
+        $result->field_series_request_admin_field_collection_item_title);
+      $series_request = 
+	array('nid' =>
+	      $result->field_series_request_admin_field_collection_item_nid,
+	      'runtime' => $runtime,
+	      'frequency' => $frequency,
+	      'title' => $title);
+
+      foreach($days as $day) {
+	$channel_slots[$channel][$day][$time] = $series_request;
+	if ($source) {
+	  $source_slots[$source][$day][$time] = $series_request;
+	}
+      }
+    }
+  }
+  return array('channel' => $channel_slots,
+	       'source' => $source_slots);
+}
+
+function cm_series_request_settings_form($form, &$form_state) {
+  $sr_ss_status = variable_get(CM_SERIES_REQUEST_SUBMIT_STATUS);
+
+  if ($sr_ss_status) {
+    $default_sr_ss = array('open');
+  }
+  else {
+    $default_sr_ss = array();
+  }
+
+  
+  $sr_air_status = variable_get(CM_SERIES_REQUEST_UPCOMING_AIRINGS_STATUS);
+
+  if ($sr_air_status) {
+    $default_sr_air = array('display');
+  }
+  else {
+    $default_sr_air = array();
+  }
+  $checked = 'checked';
+  $form['series_request_applications_open'] = 
+    array(
+	  '#type' => 'checkboxes',
+	  '#title' => 'Series Requests:',
+	  '#options' => array('open'=>"Allow Producer Series Requests"),
+	  '#default_value' => $default_sr_ss,
+	  '#description' => 'Check this box if you would like to open up '.
+	  'applications for series requests for the next season.',
+	  );
+  $form['series_request_display_airings'] = 
+    array(
+	  '#type' => 'checkboxes',
+	  '#title' => 'Upcoming Airings and My Shows:',
+	  '#options' => 
+        array(
+          'display'=>"Display Producer Airings and Shows for Next Season"
+        ),
+	  '#default_value' => $default_sr_air,
+	  '#description' => 'Check this box if you would like to producers '.
+	  'to see their upcoming airings for the next season.',
+	  );
+  $form['submit_button'] = array(
+				 '#type' => 'submit',
+				 '#value' => t('Submit'),
+				 );
+  return $form;
+}
+
+function cm_series_request_settings_form_submit($form, &$form_state) {
+  
+  if ($form['series_request_applications_open'] &&
+      $form['series_request_applications_open']['#value'] && 
+      $form['series_request_applications_open']['#value']['open']) {
+    variable_set(CM_SERIES_REQUEST_SUBMIT_STATUS, TRUE);
+  }
+  else {
+     variable_set(CM_SERIES_REQUEST_SUBMIT_STATUS, FALSE);
+  }
+  if ($form['series_request_display_airings'] &&
+      $form['series_request_display_airings']['#value'] && 
+      $form['series_request_display_airings']['#value']['display']) {
+    variable_set(CM_SERIES_REQUEST_UPCOMING_AIRINGS_STATUS, TRUE);
+  }
+  else {
+     variable_set(CM_SERIES_REQUEST_UPCOMING_AIRINGS_STATUS, FALSE);
+  } 
+}
+function cm_series_request_my_projects_view_field($row) {
+
+  // Fetch season
+  $next_season = timespan_next(CM_SERIES_REQUEST_SEASON_TIMESPAN_NAME);
+  
+  //FETCH PROJECT
+  if (!$row->nid) {
+    drupal_set_message("Error Code 57478: Missing Project", 'error');
+  }
+  $project = node_load($row->nid);
+  if (CM_SERIES_REQUEST_SERIES_PROJECT_TYPE_TID !=
+      $project->field_cm_project_types[LANGUAGE_NONE][0]['tid']) {
+    return "N/A";
+  }
+
+  //FETCH SERIES REQUEST
+  $sql = 
+    "SELECT rp.entity_id
+     FROM {field_data_field_request_project} rp
+     INNER JOIN {node} n on n.nid=rp.entity_id
+     WHERE field_request_project_target_id = :project_id
+     ORDER BY n.created desc
+    ";
+
+  $results = db_query($sql, array(':project_id' => $row->nid));
+  while ($result = $results->fetchObject()) {
+    $request = node_load($result->entity_id);
+    if (isset($request->field_season_request_dates) &&
+	isset($request->field_season_request_dates[LANGUAGE_NONE])) {
+      $request_season_start = 
+	$request->field_season_request_dates[LANGUAGE_NONE][0]['value'];
+      if ($request_season_start == $next_season['start']) {
+	break;
+      }
+      $request = NULL;
+    }
+  }
+
+  $request_status = NULL;
+  $season_name = cm_series_request_get_season_name($next_season);
+  if (isset($request) and $request) {
+    $request_status = 
+      $request->field_series_request_status[LANGUAGE_NONE][0]['value'];
+    return ($request_status." for ".$season_name);
+  }
+  
+  // only return show link for Active projects
+  if (cm_series_request_get_project_status($row->nid) != 'Active') {
+    return "N/A";
+  }
+
+  $roles = array(CM_SERIES_REQUEST_PROGRAMMING_STAFF_ROLE,
+		   CM_SERIES_REQUEST_SYS_ADMIN_ROLE);
+  $is_staff = cm_series_request_user_has_role($roles) ?
+    TRUE : FALSE;
+
+
+  if ($is_staff || variable_get(CM_SERIES_REQUEST_SUBMIT_STATUS)) {
+   return l('Submit Request for '.$season_name, 
+      'node/add/series-request',
+      array('query' => array('field_request_project'=>$row->nid)));
+  } 
+  
+  return "N/A";
+}
+
+/**  Called from view airings_producer_dashboard to see if next season's
+  *  airings should be removed from the view
+  */
+/** USING CONTEXTUAL FILTER INSTEAD OF PHP FILTER B/C PROBLEMS WITH COUNT
+function cm_series_request_upcoming_airings_view_field($row) {  
+
+  //FETCH AIRING DATE
+  $sql = 
+    "SELECT ad.field_airing_date_value
+     FROM {field_data_field_airing_date} ad
+     WHERE ad.entity_id = :entity_id
+    ";
+  $results = db_query($sql, array(':entity_id' => $row->airing_id));
+  $result = $results->fetchObject();
+ 
+
+  $airing_date = $result->field_airing_date_value ? 
+          $result->field_airing_date_value : NULL;
+
+
+    if (isset($airing_date) && $airing_date) {
+      $premiere_object = 
+	new DateTime($airing_date, 
+		       new DateTimeZone('UTC'));
+      $premiere_object->setTimeZone(new DateTimeZone('America/Los_Angeles'));
+
+      $premiere_date = $premiere_object->format('m/d/Y h:ia');
+    }           
+   
+  // Fetch season
+  $next_season = timespan_next(CM_SERIES_REQUEST_SEASON_TIMESPAN_NAME);  
+  $is_future = strtotime($premiere_date) >= strtotime($next_season['start']) ?
+      TRUE : FALSE;
+ 
+  $roles = 
+    array(CM_SERIES_REQUEST_PROGRAMMING_STAFF_ROLE,
+		   CM_SERIES_REQUEST_SYS_ADMIN_ROLE,
+       CM_SERIES_REQUEST_SITE_ADMIN_ROLE,
+       CM_SERIES_REQUEST_SERIES_RENEWED_ROLE,
+    );
+  $is_staff = cm_series_request_user_has_role($roles) ?
+    TRUE : FALSE;
+    
+//$is_staff = false;    
+ 
+  $display = variable_get(CM_SERIES_REQUEST_UPCOMING_AIRINGS_STATUS);  
+
+  if (!$display && $is_future && !$is_staff)  {
+    return TRUE; // remove     
+  } 
+
+  return FALSE; // do not remove 
+}
+**/
+
+function cm_series_request_get_season_name($season) {
+  $start = strtotime($season['start']);
+  return cm_series_request_get_season_name_for_date($start);
+  
+}
+
+function cm_series_request_get_season_name_for_date($start) {
+  $month = date('n', $start);
+  $year = date('Y', $start);
+  
+  if ($month < 4) {
+    $name = 'Winter '.$year;
+  }
+  else if ($month < 7) {
+    $name = 'Spring '.$year;
+  }
+  else if ($month < 10) {
+    $name = 'Summer '.$year;
+  }
+  else {
+    $name = 'Fall '.$year;
+  }   
+  return $name;
+}
+
+/*
+ *  Implements hook_form_alter
+ */
+function cm_series_request_form_alter(&$form, &$form_state, $form_id) {
+
+  if (isset($form['#node_edit_form']) && $form['#node_edit_form']
+    && $form['type']['#value'] == 'series_request') {
+
+    if (isset($form['nid']) && isset($form['nid']['#value']) &&
+	$form['nid']['#value']) {
+      $nid = $form['nid']['#value'];
+
+    }
+    else {
+      $nid = NULL;
+    }  
+    
+    $form['title'] = array(
+			   '#type' => 'hidden',
+			   '#value' => 'temp title',
+			   );
+
+
+    // create hidden fields for field_request_status and scheduling
+    // field collection
+    $return = cm_series_request_create_hidden_fields_alter_form($form);
+    
+    if ($nid) {
+      if (user_access('manage cm_series_request')) {
+	$view = 
+	  views_get_view('series_request_scheduling_information');
+	if ($view) {
+	  //build and execute the view using the content type of the bucket
+	  $view->set_arguments(array($nid));
+	  $output = $view->execute_display('block');   
+	  $result_count = count($view->result);
+	  if ($result_count > 0) {
+	    $form['pcm_series_request_form_header'] = 
+	      array(
+		    '#markup'=> $output['content'],
+		    '#weight' => -1,
+		    );
+	  }  
+	}
+      }
+
+      $node = node_load($nid);
+      
+      $next_season = timespan_next(CM_SERIES_REQUEST_SEASON_TIMESPAN_NAME);
+      $season_name = cm_series_request_get_season_name($next_season);
+      $day_of_week = date('l', strtotime($next_season['start']));
+
+      $form['field_series_request_admin']['#prefix'] = 
+        "The first row is the premiere row. The day and time for the slot 
+         must be the earlier than all the subsequent rows. The earliest day 
+         will be the day of the week of the first day of the season.  For 
+         $season_name, the first day of the week will be $day_of_week";      
+       
+      //$status = isset($form['field_series_request_status'][LANGUAGE_NONE]
+      $status = isset($form['field_series_request_status']
+              [LANGUAGE_NONE]['#default_value'][0]) ?
+          $form['field_series_request_status']
+              [LANGUAGE_NONE]['#default_value'][0] :
+          NULL;
+      
+      if ($status != 'Scheduled') {
+        // allow for reseting schedule - reloads the node
+        $schedule_reset_text =
+          l('Click Here', 'admin/programming/refresh_node/'.$nid);
+        $schedule_reset_text .= " to reset the above schedule data";
+        $form['field_series_request_status']['#prefix'] = "<a id='status'></a>";
+        $form['field_series_request_admin']['#suffix'] = $schedule_reset_text;
+        
+        $frequency = isset($node->field_series_frequency) ?
+          $node->field_series_frequency[LANGUAGE_NONE][0]['tid'] : NULL;
+        
+        if (isset($form['field_series_request_admin'])) {
+          for ($i = 0 ; $i <=5 ; $i++) {
+            if (isset($form['field_series_request_admin'][LANGUAGE_NONE][$i])) {
+
+              $options = $form['field_series_request_admin'][LANGUAGE_NONE][$i]
+                ['field_start_day'][LANGUAGE_NONE]['#options'];
+              foreach($options as $key=>$value) {
+                if ($key == '_none') {
+            continue;
+                }
+                if (strpos($value, 'Week') &&
+              CM_SERIES_REQUEST_WEEKLY_TID==$frequency) {
+            unset($options[$key]);
+                }
+                else if ((strpos($value, 'Week 3') || strpos($value, 'Week 4'))
+                   && CM_SERIES_REQUEST_BI_MONTHLY_TID==$frequency) {
+            unset($options[$key]);
+                }
+                else if (!strpos($value, 'Week') &&
+                   (CM_SERIES_REQUEST_MONTHLY_TID==$frequency  ||
+              CM_SERIES_REQUEST_BI_MONTHLY_TID==$frequency)) {
+            unset($options[$key]);
+                }
+              }
+
+              $next_season = 
+                timespan_next(CM_SERIES_REQUEST_SEASON_TIMESPAN_NAME);
+              $season_name = cm_series_request_get_season_name($next_season);
+              $first_dow = date('l', strtotime($next_season['start']));
+
+              $sorted_options = array();
+              $started = FALSE;
+              foreach ($options as $index=>$day) {
+                if (strpos($day, $first_dow) === 0) {
+            $started = TRUE;
+                }
+                if ($started) {
+            unset($options[$index]);
+            $sorted_options[$index] = $day;
+                }
+              }
+              foreach ($options as $index=>$day) {
+                unset($options[$index]);
+                $sorted_options[$index] = $day;
+              }
+              $form['field_series_request_admin'][LANGUAGE_NONE][$i]
+                ['field_start_day'][LANGUAGE_NONE]['#options'] = $sorted_options;
+            }
+          }
+        }
+
+        $live = cm_series_request_get_single_field_value($node, 'field_live');
+        if (!$live) {
+          if (isset($form['field_series_request_admin']
+          [LANGUAGE_NONE][0]['field_live_source'])) {        
+              $form['field_series_request_admin'][LANGUAGE_NONE][0]
+                  ['field_live_source']['#disabled'] = TRUE;
+          }
+        }
+      }
+      else {
+        // if scheduled, no more editing for some fields
+        //$form['field_series_request_status']
+        //    [LANGUAGE_NONE]['#attributes']['disabled'] = TRUE;
+        //$form['field_series_frequency']
+        //    [LANGUAGE_NONE]['#attributes']['disabled'] = TRUE;
+        //$form['field_runtime_default']
+        //    [LANGUAGE_NONE]['#attributes']['disabled'] = TRUE;
+        
+        for ($i = 0 ; $i <=5 ; $i++) {
+          if (isset($form['field_series_request_admin'][LANGUAGE_NONE][$i]
+              ['field_live_source'])) {        
+            $form['field_series_request_admin'][LANGUAGE_NONE][$i]
+                ['field_live_source']['#disabled'] = TRUE;
+          }        
+          if (isset($form['field_series_request_admin'][LANGUAGE_NONE][$i]
+              ['field_live_source'])) {        
+            $form['field_series_request_admin'][LANGUAGE_NONE][$i]
+                ['field_airing_channel']['#disabled'] = TRUE;
+          }
+          if (isset($form['field_series_request_admin'][LANGUAGE_NONE][$i]
+              ['field_start_day'])) {        
+            $form['field_series_request_admin'][LANGUAGE_NONE][$i]
+                ['field_start_day']['#disabled'] = TRUE;
+          } 
+          if (isset($form['field_series_request_admin'][LANGUAGE_NONE][$i]
+              ['field_start_time'])) {        
+            $form['field_series_request_admin'][LANGUAGE_NONE][$i]
+                ['field_start_time']['#disabled'] = TRUE;
+          }         
+        }        
+      }      
+
+      //weird thigns were happenign to end time
+      $end = $form['field_season_request_dates'][LANGUAGE_NONE]
+	[0]['#default_value']['value2'];
+
+      $end = date('m/d/Y', strtotime($end));
+
+      $form['field_season_request_dates'][LANGUAGE_NONE]
+	[0]['#default_value']['value2']  = $end;
+
+      return;
+    }
+    
+    // no nid - first time through - setup for confirmation
+    $project_id = isset($_GET['field_request_project']) ? 
+      $_GET['field_request_project']: NULL;
+
+    if (!isset($project_id) || !$project_id) {
+      return;
+    }
+    
+    $is_project_confirmed = 
+      (isset($_GET['project_confirm']) && $_GET['project_confirm'] == 'true')?
+      TRUE : FALSE;
+
+    if (!$is_project_confirmed === TRUE) {
+      drupal_goto("series-request-project-confirm/$project_id");
+      return;
+    }
+
+    // still no nid - set the title with the season
+    $next_season = timespan_next(CM_SERIES_REQUEST_SEASON_TIMESPAN_NAME);
+    $season_name = cm_series_request_get_season_name($next_season);
+
+    $form['field_season_request_dates'][LANGUAGE_NONE][0]['#default_value']['value']  = date("m/d/Y", strtotime($next_season['start']));
+
+    $form['field_season_request_dates'][LANGUAGE_NONE][0]['#default_value']['value2']  = date("m/d/Y", strtotime($next_season['end']));
+
+    // set the default as a the project series frequency
+    $project_series_frequency = cm_series_request_get_single_field_value
+        ($project, 'field_series_frequency', $index = 'tid');
+    // avoid creating a second selection option of value = "" instead of "_none")
+    if($project_series_frequency == NULL) {
+      $project_series_frequency = "_none";
+    }      
+    $form['field_series_frequency'][LANGUAGE_NONE]['#default_value'] = 
+        $project_series_frequency;
+
+
+    // set the default as a the project runtime
+    $project_runtime_default = cm_series_request_get_single_field_value
+        ($project, 'field_runtime_default', $index = 'tid');
+
+    $form['field_runtime_default'][LANGUAGE_NONE]['#default_value'] = 
+        $project_runtime_default;
+
+    // set up form for the producer
+    unset($form['field_series_request_admin']);
+    unset($form['field_series_request_status']);
+    unset($form['field_series_request_priority']);
+    unset($form['field_series_request_rejection_r']);    
+   
+  }
+  else if($form_id == "views_form_series_request_project_settings_page_1"){
+    // display the confirmation form and setup for creating series request
+    $form['actions']['submit']['#value'] = "Confirm Project Settings";
+
+    $project_id = arg(1);
+    $roles = array(CM_SERIES_REQUEST_PROGRAMMING_STAFF_ROLE,
+		   CM_SERIES_REQUEST_SYS_ADMIN_ROLE);
+    $destination = cm_series_request_user_has_role($roles) ?
+      "admin/programming/series-requests/series-requests-pending" : "dashboard";
+
+    $form['#action'] = 
+      "/node/add/series-request?field_request_project=".$project_id.
+      "&project_confirm=true&destination=".$destination;
+  }
+}
+
+/*
+ * Implements node_validate
+ */
+function cm_series_request_node_validate($node, $form, &$form_state) {
+
+  if (isset($form['#node_edit_form']) && $form['#node_edit_form']
+      && $form['type']['#value'] == 'series_request') {    
+  
+    dpm('validate');
+    
+    // when form is first being created
+    if (!isset($node->nid)) { 
+      if (isset($node->field_request_project[LANGUAGE_NONE][0]['target_id'])){
+        $project_nid = 
+          $node->field_request_project[LANGUAGE_NONE][0]['target_id'];
+        
+      // if user does not have series request manage permissions, they 
+      // cannot create more than one active series request per project
+  
+/**********  REMOVE VALIDATION FOR NOW
+      // FIXME LOTTIE: need to include a season check as well so that persons
+      // can create series requests for the same project across seasons
+    if (cm_series_request_count_for_project($project_nid) >= 
+  SERIES_REQUEST_MAX_ACTIVE_FOR_PROJECT) {
+      if(!cm_series_request_access('create')) {
+  $error = t("Sorry, you are not allowed to create more than one active "
+      . "series request per project. Your changes have not been saved.");
+  form_set_error('form', $error);
+
+      }
+    }
+REMOVE VALIDATION FOR NOW ***********************/
+        
+
+    // project must be of type series to create a series request 
+    $project_nid = $_GET['field_request_project'];
+    $project_type = cm_series_request_get_project_type($project_nid);
+    $series = cm_series_request_get_project_type($project_nid);
+    
+    
+    if ($series != 'Series') {         
+      $error = t("Series requests can only be created for projects that " .
+          "are of type 'series.' Your changes have not been saved.");
+      form_set_error('form', $error);
+    }
+      }
+    }
+   
+    /////// if studio session then studio request fields are required
+    $studio_session = 
+ $form_state['values']['field_studio_session_q'][LANGUAGE_NONE][0]['value'];
+ 
+    if ($studio_session) {    
+      $studio_request = $form_state['values']['field_studio_request'][LANGUAGE_NONE];
+      //dpm($studio_request, 'studio_request');      
+      
+      foreach ($studio_request as $request_id => $request_item) {
+        //dpm($request_id, '$request_id');         
+        //dpm($request_item, '$request_item');
+        $request_object = (object) $request_item;
+        $item = $request_id + 1;
+        $studio_type = cm_series_request_get_single_field_value($request_object, 'field_studio_type', 'tid');
+        $studio_duration = cm_series_request_get_single_field_value($request_object, 'field_studio_req_duration', 'value');
+        $studio_day = cm_series_request_get_single_field_value($request_object, 'field_open_days', 'value');
+        $studio_timeslot = cm_series_request_get_single_field_value($request_object, 'field_studio_timeslot', 'value');
+        //dpm($studio_type, '$studio_type');
+        //dpm($studio_duration, '$studio_duration');
+        //dpm($studio_day, '$studio_day');
+        //dpm($studio_timeslot, '$studio_timeslot');
+        if (empty($studio_type)) {
+          $name = 'field_studio_request][' . LANGUAGE_NONE . 
+                      '][' . $request_id . '][field_studio_type';
+          $error = t('Studio Type field for item ' . $item . ' is required.');
+          form_set_error($name, $error);
+        }
+        if (empty($studio_day)) {
+          $name = 'field_studio_request][' . LANGUAGE_NONE . 
+                      '][' . $request_id . '][field_open_days';
+          $error = t('Studio Request Day field for item ' . $item . ' is required.');
+          form_set_error($name, $error);
+        }
+        if (empty($studio_timeslot)) {
+          $name = 'field_studio_request][' . LANGUAGE_NONE . 
+                      '][' . $request_id . '][field_studio_timeslot';
+          $error = t('Studio Timeslot field for item ' . $item . ' is required.');
+          form_set_error($name, $error);
+        }
+        if (empty($studio_duration)) {
+          $name = 'field_studio_request][' . LANGUAGE_NONE . 
+                      '][' . $request_id . '][field_studio_req_duration';
+          $error = t('Request Duration field for item ' . $item . ' is required.');
+          form_set_error($name, $error);
+        }
+      }
+    }
+    
+    $status = (isset($form_state['values']['field_series_request_status']
+            [LANGUAGE_NONE][0]['value'])) ? 
+        $form_state['values']['field_series_request_status']
+            [LANGUAGE_NONE][0]['value'] : NULL;
+  
+    if ($status) {
+
+      // Don't allow status to be marked as "Scheduled" from the form (manually), 
+      // only from the batch script
+      if ($status == 'Scheduled' && 
+  $form['field_series_request_status_hidden']['#value'] != 'Scheduled') {
+
+        $message = t("Status cannot be changed to 'Scheduled' manually.");
+        form_set_error('field_series_request_status', $message);    
+      }
+
+// Approved requires more validations than pending      
+      if ($status == 'Approved') {
+        
+  $season_start = cm_series_request_get_single_field_value(
+                $node, 
+               'field_season_request_dates',
+               'value'); 
+  $season_start = $season_start ? strtotime($season_start) : NULL;
+
+  for ($i = 0 ; $i <=5; $i++) { 
+
+    $source = (isset($form_state['values']['field_series_request_admin']
+      [LANGUAGE_NONE][$i]['field_live_source'][LANGUAGE_NONE][0]['value'])) ?
+      $form_state['values']['field_series_request_admin'][LANGUAGE_NONE]
+      [$i]['field_live_source'][LANGUAGE_NONE][0]['value'] : NULL;
+
+    $channel = (isset($form_state['values']['field_series_request_admin']
+        [LANGUAGE_NONE][$i]['field_airing_channel'][LANGUAGE_NONE][0]['tid'])) ?
+        $form_state['values']['field_series_request_admin']
+        [LANGUAGE_NONE][$i]['field_airing_channel'][LANGUAGE_NONE][0]['tid'] :
+        NULL;
+
+    $start_day = isset($form_state['values']['field_series_request_admin']
+      [LANGUAGE_NONE][$i]['field_start_day'][LANGUAGE_NONE][0]['value']) ?
+      $form_state['values']['field_series_request_admin'][LANGUAGE_NONE]
+      [$i]['field_start_day'][LANGUAGE_NONE][0]['value']  : NULL;
+
+    $time = isset($form_state['values']['field_series_request_admin']
+      [LANGUAGE_NONE][$i]['field_start_time'][LANGUAGE_NONE][0]['value']) ?
+      $form_state['values']['field_series_request_admin']
+      [LANGUAGE_NONE][$i]['field_start_time'][LANGUAGE_NONE][0]['value'] : NULL;
+
+    if ($i == 0 && !$channel) {
+        $error_msg = t("You must choose a channel, day, and time for the ".
+            "first row (the premiere row).");
+        form_set_error('field_series_request_admin', $error_msg);
+        return;
+    } 
+    elseif ($channel && (!$start_day || !$time)) {
+      // make sure first row is filled and no incomplete schedule rows
+        $error_msg = t("Your scheduling row(s) contain an incomplete ".
+            "Channel/Day/Time combo.");
+        form_set_error('field_series_request_admin', $error_msg);     
+        return;
+    }
+    
+    if (!$channel && !$start_day && !$time) {
+      continue;
+    }
+
+    $datetime = cm_series_request_convert_startday_to_datetime(
+          $season_start, $start_day, $time);
+
+    if ($i == 0) {
+      $premiere_datetime = $datetime;
+
+    }
+    else {
+      // no follow-up can contain a source - only one source per series request
+      if ($source != NULL) {
+          $message = t("A follow-up scheduling slot " . 
+              "contains a live source. Only the premiere row, which is " .
+              "the first row, may contain a live source.");
+          form_set_error('field_series_request_admin', $message);
+          return;
+      }
+
+      // no subsequent start date can be prior to the premiere start date
+      //if ($datetime <= $premiere_datetime) {
+      if (FALSE) {
+          $message = t("A follow-up scheduling slot " . 
+              "is set to a day and time that is the same or earlier than ".
+              "the first row. The first row is the premiere row. It must ".
+              "be set for a day and time that is earlier than follow-up ".
+              "rows.");
+          form_set_error('field_series_request_admin', $message);
+          return;
+      }    
+    }
+  }
+
+      // make sure the scheduled slots contain slots that are available
+        $combo_error = array();
+        $combo_error = cm_series_request_check_scheduled_combo($form_state, $form);
+        if (!empty ( $combo_error )) {
+          form_set_error($combo_error['name'], $combo_error['error']);
+          return;
+        }      
+      } 
+    }
+  }
+}
+
+function cm_series_request_node_presave($node) {
+  
+  if ($node->type == 'series_request') {
+    //FIXME THIS IS A HACK BECAUSE FIELD COLLECTIONS DROP
+    //THE AUTHOR UPON RESAVES, FIND BETTER SOLUTION THAN FIELD 
+    //COLLECTIONS
+    $auth_var_name = "cm_series_request_auth_for_" . $node->nid;
+    global $$auth_var_name;
+
+    $uid_var_name = "cm_series_request_uid_for_" . $node->nid;
+    global $$uid_var_name;
+
+    $status_var_name = "cm_series_request_status_for_" . $node->nid;
+    global $$status_var_name;
+
+    $promote_var_name = "cm_series_request_promote_for_" . $node->nid;
+    global $$promote_var_name;
+
+    if (!isset($$auth_var_name)) {
+      $$auth_var_name = $node->name;
+      $$uid_var_name = $node->uid;
+      $$status_var_name = $node->status;
+      $$promote_var_name = $node->promote;
+    }
+    else {
+      $node->name = $$auth_var_name;
+      $node->uid = $$uid_var_name;
+      $node->status = $$status_var_name;
+      $node->promote = $$promote_var_name;
+    }
+    //END OF PATCHING SERIES REQUEST NODE AUTHOR BECAUSE OF FIELD COLLECTION BS
+
+    $priority = cm_series_request_get_initial_priority($node);
+    $node->field_series_request_priority[LANGUAGE_NONE][0]['value'] = 
+      $priority;
+    
+    $date_string = 
+      $node->field_season_request_dates[LANGUAGE_NONE][0]['value'];
+
+    $season_start = $date_string ? strtotime($date_string) : "";
+
+    //if we don't have a season start it means the user was not allowed to
+    //enter in season dates, therefore we set them to the next season
+    if (!$season_start) {
+      $next_season = timespan_next(CM_SERIES_REQUEST_SEASON_TIMESPAN_NAME);
+      $season_start = strtotime($next_season['start']);
+      $node->field_season_request_dates[LANGUAGE_NONE][0]['value'] =
+	date("Y-m-d H:i:s", $season_start);
+      $node->field_season_request_dates[LANGUAGE_NONE][0]['value2'] =
+	date("Y-m-d H:i:s", strtotime($next_season['end']));
+    } 
+    
+    $project_id =
+      cm_series_request_get_single_field_value($node,
+					       'field_request_project',
+					       'target_id');
+
+    $var_name = "cm_series_request_title_".$node->nid;
+
+    //FIXME: REMOVED FIELD COLLECTIONS SO DON'T NEED TO DANCE WHEN SETTIN TITLE
+    global $$var_name;
+    if ($project_id && !isset($$var_name)) {
+      $project = node_load($project_id);
+      $season_name = 
+	cm_series_request_get_season_name_for_date($season_start);
+      $title = $project->title." - ".$season_name;
+      $node->title = $title;
+      $$var_name = $title;
+    }
+    else if (isset($$var_name)){
+      $node->title = $$var_name;
+    }
+  }
+}
+function cm_series_request_get_initial_priority($node) {
+  $project_id = 
+    cm_series_request_get_single_field_value($node, 
+					     'field_request_project', 
+					     'target_id');
+  if ($project_id) {
+    $project = node_load($project_id);
+
+    $is_live = 
+      cm_series_request_get_single_field_value($node, 'field_live');
+      
+    if ($is_live) {
+      $is_callin = 
+	cm_series_request_get_single_field_value($node, 
+						 'field_request_call_in');
+    }
+    else {
+      $is_callin = 0;
+    }
+    
+    $uses_studio = 
+      cm_series_request_get_single_field_value($node, 
+					       'field_studio_session_q');
+      
+    $uses_equipment =  
+      cm_series_request_get_single_field_value($node, 
+					       'field_camera_checkout_q');
+      
+    $uses_editing =  
+      cm_series_request_get_single_field_value($node, 
+						 'field_editing_session_q');
+      
+    //FIXME, THIS IS REALLY PCM SPECIFIC, SHOULD BE HANDLED DIFFERENTLY
+    //LOOK AT THE post_process functionality in this module
+    $seasons_number = pcm_project_get_season_number($project->nid,
+						    $node->nid);
+
+
+    if (!$seasons_number || $seasons_number == 0) {
+      $multiplier = 2;
+    }
+    if ($seasons_number == 1) {
+      $multiplier = 3;
+    }
+    if ($seasons_number >= 2) {
+      $multiplier = 1;
+    }
+
+    if ($is_callin) {
+      $priority = 5;
+    }
+    else if ($is_live) {
+      $priority = 4;
+    }
+    else if ($uses_studio ||
+	     $uses_equipment ||
+	     $uses_editing) {
+      $priority = 3;
+    }
+    else {
+      $priority = 1;
+    }
+    
+    $priority = $priority * $multiplier;
+
+    return $priority;
+  }
+  return 0;
+  //call in, 1 previous season                                               
+  // 5 x 3 = 15                                                              
+  //call in, no previous season                                              
+  // 5 x 2 = 10                                                               
+  //call in, 2 or more previous season                                       
+  // 5 x 1 = 5                                                               
+  //live (no call in) 1 previous season                                      
+  // 4 x 3 = 12                                                              
+  //live (no call in) no previous season                                     
+  // 4 x 2 = 8                                                               
+  //live (no call in) 2 or more previous season                              
+  // 4 x 1 = 4                                                               
+  //studio/equipment 1 previous season                                       
+  // 3 x 3 = 9                                                               
+  //studio/equipment no previous season                                      
+  // 3 x 2 = 6                                                               
+  //studio/equipment 2 or more previous season                               
+  // 3 x 1 = 3                                                               
+  //other  1 previous season                                                  
+  // 1 x 3 = 3                                                               
+  //other  no previous season                                                
+  // 1 x 2 = 2                                                               
+  //other  2 or more previous season                                         
+  // 1 x 1 = 1       
+}
+
+/**
+ * Checks if the current user has a role
+ *
+ * @param array $roles
+ *
+ * @return bool
+ */
+function cm_series_request_user_has_role($roles = array()) {
+  
+  global $user;
+  if (user_access('administer site content')) {
+      return TRUE;
+  }
+  foreach ($roles as $role) {
+    if (in_array($role, $user->roles)) {
+      return TRUE;
+    }
+  }
+  return FALSE;
+}
+
+/**
+ * Implementation of hook_action_info().
+ */
+function cm_series_request_action_info() {
+  
+  $action = 
+    array(
+	  'cm_series_request_batch_schedule' => 
+	  array(
+		'label' => t('Batch Schedule Series Requests'),
+		'type' => 'node',
+		'configurable' => FALSE,
+		'triggers' => array('any'),
+		),
+
+	  'cm_series_request_reset_rank' => 
+	  array(
+		'label' => t('Reset Priority Ranking'),
+		'type' => 'node',
+		'configurable' => FALSE,
+		'triggers' => array('any'),
+		),
+   	'cm_series_request_schedule_confirmation_email' => 
+	  array(
+		'label' => t('Series Request Scheduled Email Confirmation'),
+		'type' => 'node',
+		'configurable' => TRUE,
+		'triggers' => array('any'),
+		),      
+   	'cm_series_request_schedule_show_cleanup' => 
+	  array(
+		'label' => t('Delete Series Shows & Their Airings'),
+		'type' => 'node',
+		'configurable' => FALSE,
+		'triggers' => array('any'),
+		'behavior' => array('delete_property'),
+		),      
+    //'cm_series_request_schedule_show_title_cleanup' => 
+	  //array(
+		//'label' => t('Update Show Titles/Descriptions with Episode#'),
+		//'type' => 'node',
+		//'configurable' => FALSE,
+		//'triggers' => array('any'),
+		//),      
+
+   	'cm_series_request_schedule_airing_cleanup' => 
+	  array(
+		'label' => t('Delete Series Airings and their Repeats'),
+		'type' => 'airing',
+		'configurable' => FALSE,
+		'triggers' => array('any'),
+		'behavior' => array('delete_property'),
+		),      
+
+	  );
+  
+  return $action;
+}
+
+/** no longer needed
+function cm_series_request_schedule_show_title_cleanup(&$show, 
+						       $context = array()) {
+  $episode_number = 
+    cm_series_request_get_single_field_value($show, 
+					     'field_episode_number');
+  //get project off airing
+  $project_id = 
+    cm_series_request_get_single_field_value($show, 
+					     'og_group_ref',
+					     'target_id');
+  $project = node_load($project_id);
+  $project_title = $project->title;
+
+  $premiere_date = 
+    cm_series_request_get_single_field_value($show, 
+					     'field_premier_date');
+
+  $season_part = pcm_show_get_season_name_for_date($premiere_date);
+
+  //get title from project and episode number
+  $title = $project_title . ": ".$season_part. ": #".$episode_number;
+  $short_description = $title;
+  $tv_guide_title = $title;
+
+  $show->title = $title;
+  
+  db_query("update node set title='$title' where nid=".$show->nid);
+
+  $show->field_tv_guide_title[LANGUAGE_NONE][0] = 
+    array('value' => $tv_guide_title);
+
+  $show->field_short_description[LANGUAGE_NONE][0] = 
+    array('value' => $short_description);
+  
+  field_attach_update('node', $show);
+  entity_get_controller('node')->resetCache(array($show->nid));
+}
+**/
+
+function cm_series_request_schedule_airing_cleanup(&$airing, 
+						   $context = array()) {
+  $subsequent_airings = 
+    isset($airing->field_subsequent_airings) &&
+    isset($airing->field_subsequent_airings[LANGUAGE_NONE]) ?
+    $airing->field_subsequent_airings[LANGUAGE_NONE] : array();
+  
+  foreach($subsequent_airings as $subsequent_airing) {
+    $results = 
+      entity_load('airing', array($subsequent_airing['target_id']));
+    
+    $repeat = array_pop($results);
+    if ($repeat) {
+      entity_delete('airing', array($repeat->airing_id));
+    }
+  }
+
+  if ($airing) {
+    entity_delete('airing', array($airing->airing_id));
+  }
+
+}
+
+function cm_series_request_status_widget($series_request_nid) {
+  //fetch view of show airings
+  $view = views_get_view('series_request_status_widget');
+  if (!$view) {
+    drupal_set_message("Error Code 21455: Missing view:".
+		       CM_SHOW_REQUEST_SHOW_AIRINGS_VIEW, 'error');
+    return;
+  }
+  //set show nid as argument
+  $series_request_nid = arg(4);
+  $view->set_arguments(array($series_request_nid));
+  $output = $view->execute_display();
+
+  return $output;
+
+}
+
+function cm_series_request_schedule_show_cleanup(&$show, 
+						 $context = array()) {
+  //fetch view of show airings
+  $view = views_get_view(CM_SHOW_REQUEST_SHOW_AIRINGS_VIEW);
+  if (!$view) {
+    drupal_set_message("Error Code 21678: Missing view:".
+		       CM_SHOW_REQUEST_SHOW_AIRINGS_VIEW, 'error');
+    return;
+  }
+  //set show nid as argument
+  $view->set_arguments(array($show->nid));
+  
+  //execute and get results
+  $view->execute();
+  $results = $view->result;
+
+  $airdates = array();
+  foreach($results as $result) {
+    entity_delete('airing', array($result->airing_id));
+  }
+
+  node_delete($show->nid);    
+}
+
+
+
+/*                                                                              * This is a util funtion that allows you to add x amount of units to 
+ * a date. I.e. i want to add 4 weeks or 3 days to a date.  
+ * 
+ * The important thing in this function is it takes into affect
+ * DST so that if i add 1 week to Monday at 4pm, i get the next week at
+ * 4pm regardless of if there was DST change within the week.
+ *                                      
+ * @param $time the time to which to ad
+ * @param $type will be either hour, day or week
+ * @param $multiplier the amount of hours, days, or week
+ */
+function cm_series_request_add_to_date($time, $type, $multiplier) {
+  if (!$multiplier) {
+    $multiplier = 1;
+  }
+  if ($type == "week") {
+    $new_time = $time + $multiplier*7*24*60*60;
+  }
+  else if ($type == "hour") {
+    $new_time = $time + $multiplier*60*60;
+  }
+  else if ($type == "day") {
+    $new_time = $time + $multiplier*24*60*60;
+  }
+
+  if (date('I', $time) != date('I', $new_time)) {
+    if (date('I', $new_time)) {
+      $new_time = $new_time - 60*60;
+    }
+    else if (date('I', $time)) {
+      $new_time = $new_time + 60*60;
+    }
+  }
+
+  return $new_time;
+}
+
+function cm_series_request_get_extended_counter($tid) {
+  $seconds = cm_series_request_get_runtime_seconds_for_tid($tid);
+  $seconds = $seconds ? $seconds : 0;
+  $counter = floor($seconds/(30*60));
+  return $counter;
+}
+function cm_series_request_get_runtime_seconds_for_tid($tid) {
+  if (!isset($tid) || !$tid) {
+    return NULL;
+  }
+  $term = taxonomy_term_load($tid);
+  if (!$term) {
+    return NULL;
+  }
+  $seconds = cm_series_request_get_single_field_value($term, 
+						      'field_runtime_seconds', 
+						      'value');
+  return $seconds;
+}
+
+
+function cm_series_request_reset_rank(&$entity, $context = array()) {
+  $entity->field_series_request_sorted_rank[LANGUAGE_NONE][0]['value'] = NULL;
+  node_save($entity);
+}
+
+function cm_series_request_batch_schedule(&$entity, $context = array()) {
+  global $cm_show_request_skip_missing_file_message; 
+  $cm_show_request_skip_missing_file_message = TRUE;
+
+  global $cm_cablecast_skip_confirmation_messages_flag;
+  $cm_cablecast_skip_confirmation_messages_flag = TRUE;
+
+  //does the module exist, if so grab any series slots to be scheduled
+  if (module_exists('cm_series_slot')) {
+    $grid_slots = cm_series_slot_get_slots_for_batch($entity->nid);
+  }
+  
+  //if we have slots from teh grid schedule them and not field collections
+  if (isset($grid_slots) && $grid_slots) {
+    cm_series_slot_schedule_series_request($entity, $grid_slots);
+  }
+  else {
+    cm_series_request_batch_field_collections($entity);
+    if (module_exists(CM_SERIES_REQUEST_POST_PROCESS_MODULE)) {
+      $function = CM_SERIES_REQUEST_POST_PROCESS_MODULE . "_" . 
+	CM_SERIES_REQUEST_POST_PROCESS_FUNCTION;
+      $function();
+    }
+  }
+}
+
+//THIS FUNCTION WILL SCHEDULE A SERIES REQUEST USING FIELD COLLECTIONS
+function cm_series_request_batch_field_collections($node) {
+  $project_nid = 
+    cm_series_request_get_single_field_value($node, 
+					     'field_request_project', 
+					     'target_id');
+
+  //grab frequency so we know how often to schedule
+  $frequency =
+    cm_series_request_get_single_field_value($node, 'field_series_frequency',
+					     'tid');
+
+  $runtime_tid = 
+    cm_series_request_get_single_field_value($node, 'field_runtime_default',
+					     'tid');
+
+  $runtime = cm_series_request_get_runtime_seconds_for_tid($runtime_tid);
+  $runtime = $runtime ? $runtime : 28*60+30;
+        
+  $slots = 
+    (isset($node->field_series_request_admin) &&
+     isset($node->field_series_request_admin[LANGUAGE_NONE]) &&
+     $node->field_series_request_admin[LANGUAGE_NONE]) ?
+    $node->field_series_request_admin[LANGUAGE_NONE] : array();
+  
+  if (!$slots) {
+    drupal_set_message("Warning! ".l($node->title, "node/".$node->nid."/edit").
+			 " has no scheduled slots.", 'warning');
+    return;
+  }
+
+  $season_start = 
+    cm_series_request_get_single_field_value($node, 
+					     'field_season_request_dates',
+					     'value');
+  $season_start = $season_start ? strtotime($season_start) : NULL;
+
+  $season_end = 
+    cm_series_request_get_single_field_value($node, 
+					     'field_season_request_dates',
+					     'value2');
+
+  $season_end = $season_end ? strtotime($season_end) : NULL;
+
+  $seed_dates = array();
+  $seed_airings = array();
+  $seed_times = array();
+  $premiere_time = 0;
+  foreach($slots as $slot) {
+    $id = $slot['value'];
+    if ($id) {
+      $collections = entity_load('field_collection_item', array($id));
+      $field_collection = array_pop($collections);
+      $source = cm_series_request_get_single_field_value($field_collection, 
+							 'field_live_source',
+							 'value');
+
+      $channel = cm_series_request_get_single_field_value($field_collection, 
+							'field_airing_channel',
+							  'tid');
+      if (!$channel) {
+	continue;
+      }
+      $slot_name = cm_series_request_get_single_field_value($field_collection, 
+							    'field_start_day',
+							    'value');  
+      $time = cm_series_request_get_single_field_value($field_collection, 
+						       'field_start_time',
+						       'value');
+
+      $day_parts = explode(" -- Week ", $slot_name);
+      $day_of_week = $day_parts[0];
+      $week_number = isset($day_parts[1]) ?  $day_parts[1] : 1;
+
+      $time = strtotime(date('Y-m-d', $season_start)." ".$time);
+
+      for ($i=1; $i<=7; $i++) {
+	if ($day_of_week == date('l',$time)) {
+	  for ($j=1; $j<=4; $j++) {
+	    if ($j == $week_number) {
+	      break;
+	    }
+	    $time = cm_series_request_add_to_date($time, 'week', 1);
+	  }
+	  break;
+	}
+	$time = cm_series_request_add_to_date($time, 'day', 1);
+      } 
+
+      //THIS WILL BE THE FIRST FIELD COLLECTION WE PROCESS
+      $premiere_time = $premiere_time ? $premiere_time : $time;
+      if ($time < $premiere_time) {
+	  switch($frequency) {
+	  case CM_SERIES_REQUEST_BI_MONTHLY_TID:
+	    $time = cm_series_request_add_to_date($time, 'week', 2);
+	    break;
+	  case CM_SERIES_REQUEST_MONTHLY_TID:
+	    $time = cm_series_request_add_to_date($time, 'week', 4);
+	    break;
+	  case CM_SERIES_REQUEST_WEEKLY_TID:
+	    $time = cm_series_request_add_to_date($time, 'week', 1);
+	    break;
+	  default:
+	    $time = $time;
+	    break;
+	  }	  
+      }
+
+      $seed_times[$time] = isset($seed_times[$time]) ? 
+	$seed_times[$time] : array();
+  
+      $airing_data = array(
+			   'collection_id' => $id,
+			   'frequency' => $frequency,
+			   'source' => $source,
+			   'channel'=> $channel,
+			   'day_of_week'=> $day_of_week,
+			   'week_number'=> $week_number,
+			   'runtime'=> $runtime,
+			   'time'=> $time,
+			   'project_nid' => $project_nid,
+			   );
+   
+      $seed_times[$time][] = $airing_data;
+
+    }
+  }
+
+  $is_premiere = TRUE;
+  $premiere_collection_id = 0;
+  $followup_airings = array();
+  $has_valid_airings = FALSE;
+  foreach ($seed_times as $time => $airings) {
+    foreach ($airings as $airing_data) {
+      $has_valid_airings = TRUE;
+      $new_airing = entity_create('airing', array());
+      
+      $start = CM_SERIES_REQUEST_TIMEZONE_SHIFT ? 
+	($time - date('Z', $time)) : $time;
+
+      if (date('I', $time) != date('I', $start)) {
+	if (date('I', $start)) {
+	  $start = $start - 60*60;
+	}
+	else if (date('I', $time)) {
+	  $start = $start + 60*60;
+	}
+      }
+      
+      $end = $start +  $airing_data['runtime'];
+
+      $new_airing->field_airing_date[LANGUAGE_NONE][0]['value'] = 
+	date('Y-m-d H:i:s', $start);
+
+      $new_airing->field_airing_date[LANGUAGE_NONE][0]['value2'] = 	
+	date('Y-m-d H:i:s', $end);
+
+      $new_airing->field_airing_project_ref[LANGUAGE_NONE][0]['target_id'] = 
+	$airing_data['project_nid'] ? $airing_data['project_nid'] : NULL;
+      $new_airing->field_airing_channel[LANGUAGE_NONE][0]['tid'] = 
+	$airing_data['channel'];
+      $new_airing->field_live_source[LANGUAGE_NONE][0]['value'] =
+	$airing_data['source'] ? $airing_data['source'] : 0;
+      $new_airing->field_airing_type[LANGUAGE_NONE][0]['tid'] =
+	CM_SERIES_REQUEST_SERIES_AIRING_TYPE_TID;
+      $premiere_collection_id = $airing_data['collection_id'];
+      $new_airing->field_series_request[LANGUAGE_NONE][0]['target_id'] =
+	$node->nid;
+      $new_airing->first_of_season = TRUE;
+
+      if ($is_premiere) {
+	$is_premiere = FALSE;
+	$new_airing->field_is_show_premiere_date[LANGUAGE_NONE][0]['value'] =
+	  1;
+	$premiere_airing = $new_airing;
+      }
+      else {
+	entity_save('airing', $new_airing);
+	$followup_airings[] = $new_airing;
+      }
+    }
+  }
+
+  entity_save('airing', $premiere_airing);
+  if($has_valid_airings) {
+    $node->field_series_request_status[LANGUAGE_NONE][0]['value'] =
+      "Scheduled";
+    node_save($node);
+  }
+
+}
+
+/**
+ * Get scheduled series requests for next season
+ * called by _cm_series_request_schedule_confirmation_email
+ * 
+ * @param series_request_nid, $season_start
+ *
+ * @return array $airings
+ */
+function cm_series_request_get_series_request($node) { 
+  
+  $series_request = array();
+  
+  $title = $node->title; 
+
+  
+
+  $start =
+    cm_series_request_get_single_field_value($node,
+					     'field_season_request_dates',
+					     'value');
+  $start = $start ? strtotime($start) : NULL;
+
+  $end =
+    cm_series_request_get_single_field_value($node,
+                                             'field_season_request_dates',
+                                             'value2');
+
+  $end = $end ? strtotime($end) : NULL;
+
+  $season_name =
+    cm_series_request_get_season_name_for_date($start);
+
+  $season_start_string = date('l, F j, Y', $start);
+  $season_end_string = date('l, F j, Y', $end);
+  $season_start = date('m-d-Y', $start);
+  $season_name = cm_series_request_get_season_name_for_date($start); 
+
+
+  if (isset($node->nid)) {
+    $nid = $node->nid;
+  } else {
+    drupal_set_message("Error: Missing series request nid: ".
+                        "cm_series_request_get_series_request", 'error');
+    return $series_request;
+  }   
+
+  // load project
+  if (isset($node->field_request_project[LANGUAGE_NONE][0]['target_id'])) {
+    $project_nid = $node->field_request_project[LANGUAGE_NONE][0]['target_id'];
+  } else {
+    drupal_set_message("Error: Missing project nid: ".
+                        "cm_series_request_get_series_request", 'error');    
+    return series_request;
+  }
+  $project_node = node_load($project_nid);
+//dpm($project_node, 'project_node');
+
+  // project author
+  $user = user_load($project_node->uid);
+  $producers_name = $user->display_name;
+  if (isset($user->mail)) {
+    
+  } else {
+        drupal_set_message("Status: Missing producer's email address: ".
+                           "cm_series_request_get_series_request; " .
+                           "project nid - " . $project_nid . 
+                           ", producer's name - " . $producers_name, 'status');
+        return series_request;
+  }    
+  $producers_email = $user->mail;
+                 
+  // project settings
+  $project_title = $project_node->title;  
+  $project_type_tid = cm_series_request_get_single_field_value(
+                 $project_node, 'field_cm_project_types', 'tid');
+  $project_type = taxonomy_term_load($project_type_tid);    
+  $est_completion_date = cm_series_request_get_single_field_value(
+                 $project_node, 'field_estimated_completion_date', 'value');
+  $est_completion_date = $est_completion_date ? 
+                format_date(strtotime($est_completion_date), 'medium') : NULL;
+  $pub_producer_name = cm_series_request_get_single_field_value(
+                 $project_node, 'field_pub_producer_name', 'value');                 
+  $pub_contact_phone = cm_series_request_get_single_field_value(
+                 $project_node, 'field_pub_contact_phone', 'value');
+  $pub_contact_email = cm_series_request_get_single_field_value(
+                 $project_node, 'field_pub_contact_email', 'value');                 
+  $pub_website = cm_series_request_get_single_field_value(
+                 $project_node, 'field_pub_website', 'url');               
+  $pbcore_languages_tid = cm_series_request_get_single_field_value(
+                 $project_node, 'field_pbcore_languages', 'tid');
+  $pbcore_languages = taxonomy_term_load($pbcore_languages_tid);                   
+  $pbcore_genres_tid = cm_series_request_get_single_field_value(
+                 $project_node, 'field_pbcore_genres', 'tid');
+  $pbcore_genres = taxonomy_term_load($pbcore_genres_tid); 
+  $short_description = cm_series_request_get_single_field_value(
+                 $project_node, 'field_short_description', 'value');   
+  $description_body = cm_series_request_get_single_field_value(
+                 $project_node, 'body', 'value');   
+
+  $field_closed_captions = cm_series_request_get_single_field_value(
+                 $project_node, 'field_closed_captions', 'value');
+  $closed_captions =  $field_closed_captions ? 'Yes' : 'No'; 
+  $field_filler = cm_series_request_get_single_field_value(
+                 $project_node, 'field_filler', 'value');
+  $filler =  $field_filler ? 'Yes' : 'No';
+  $filler_end_date = cm_series_request_get_single_field_value(
+                 $project_node, 'field_filler_end_date', 'value');
+  $filler_end_date = $filler_end_date ? 
+                 format_date(strtotime($filler_end_date), 'medium') : NULL;                 
+  $series_duration = cm_series_request_get_single_field_value(
+                 $project_node, 'field_series_duration', 'value'); 
+
+                 
+  // series settings
+  $created = format_date($node->created, $type = 'medium');
+  $series_request_frequency_tid = cm_series_request_get_single_field_value(
+                 $node, 'field_series_frequency', 'tid');
+  $series_request_frequency = taxonomy_term_load($series_request_frequency_tid);                 
+  $field_keep_current_schedule = cm_series_request_get_single_field_value(
+                 $node, 'field_series_keep_schedule', 'value');
+  $keep_current_schedule =  $field_keep_current_schedule ?
+                 'Yes' : 'No';
+  $field_live = cm_series_request_get_single_field_value(
+                 $node, 'field_live', 'value');
+  $live =  $field_live ? 'Yes' : 'No';
+  if ($live == 'Yes') {
+    $field_call_in = 
+      cm_series_request_get_single_field_value($node, 
+					       'field_request_call_in', 
+					       'value');
+    $call_in =  $field_call_in ? 'Yes' : 'No';
+  }
+  else {
+    $field_objectionable_content = 
+                    cm_series_request_get_single_field_value(
+                    $node, 'field_objectionable_content', 'value');
+    $objectionable_content = $field_objectionable_content ?
+                    'Yes' : 'No';
+  }
+
+  $runtime_default = cm_series_request_get_single_field_value(
+                 $node, 'field_runtime_default', 'value');
+  $runtime_default_tid = cm_series_request_get_single_field_value(
+                 $node, 'field_runtime_default', 'tid');
+  $runtime_default = taxonomy_term_load($runtime_default_tid);
+  $playback_prefs = cm_series_request_get_single_field_value(
+                 $node, 'field_series_playback_pref_notes', 'value');
+  $series_status = cm_series_request_get_single_field_value(
+                  $node, 'field_series_request_status', 'value');
+                
+  
+  // show settings
+  $show_nid = $series_request->nid;
+  $show = $show_nid ?  node_load($show_nid) : NULL;
+  $show_title = $show ? $show->title : $project_title;
+  
+  $series_request = array (
+      "created" => $created,
+      "nid" => $nid,
+      'title' => $title,
+      'season_start' => $season_start,
+      'season_start_string' => $season_start_string,
+      'season_end_string' => $season_end_string,
+      'season_title' => $season_name,
+      'project_nid' => $project_nid,
+      'producers_name' => $producers_name,
+      'producers_email' => $producers_email,
+      'project_title' => $project_title,
+      'project_type' => $project_type->name,
+      'est_completion_date' => $est_completion_date,
+      'pub_producer_name' => $pub_producer_name,
+      'pub_contact_phone' => $pub_contact_phone,
+      'pub_contact_email' => $pub_contact_email,
+      'pub_website' => $pub_website,
+      'pbcore_languages' => $pbcore_languages->name,
+      'pbcore_genres' => $pbcore_genres->name,
+      'short_description' => $short_description,
+      'description_body' => $description_body,
+      'live' => $live,
+      'objectionable_content' => $objectionable_content,
+      'call_in' => $call_in,
+      'closed_captions' => $closed_captions,
+      'filler' => $filler,
+      'filler_end_date' => $filler_end_date,
+      'series_request_frequency' => $series_request_frequency->name,
+      'keep_current_schedule' => $keep_current_schedule,
+      'runtime_default' => $runtime_default->name,
+      'playback_prefs_comments' => $playback_prefs,
+      'show_title' => $show_title,
+      ); 
+
+  if ($series_status == 'Scheduled') {
+    $airings = cm_series_request_get_scheduled_airings($nid, $season_start);
+    
+    if (isset($series_request)) {
+      $series_request['airings'] = $airings;
+    } else {
+        return;
+    }
+
+    $airings = cm_series_request_get_other_scheduled_airings($project_nid, 
+                   $season_start);
+    $series_request['other_airings'] = $airings;
+  }
+  
+  //dpm($series_request, 'series_request-gather');  
+  return $series_request;
+}
+
+/**
+ * Get scheduled airings for specific scheduled series request
+ * called from cm_series_request_get_series_request
+ *
+ * @param series_request_nid, $season_start
+ *
+ * @return array $airings
+ */
+function cm_series_request_get_scheduled_airings($sr_nid, $season_start) {
+  
+  $airings = array();
+
+  $view_airings = views_get_view(CM_AIRINGS_SCHEDULED_VIEW);
+  if (!$view_airings) {
+    drupal_set_message("Error Code 23289: Missing view:".
+                        CM_AIRINGS_SCHEDULED_VIEW, 'error');
+  return $airings;
+  }
+  $view_airings->set_arguments(array($sr_nid, $season_start));
+  $view_airings->execute();
+  $results = $view_airings->result;
+  
+  $i=0;
+  foreach ($results as $airing){
+
+    if (!isset($airing->airing_id)) {
+      continue;
+    }
+    $airing_id = $airing->airing_id;
+    $sr_nid = $airing->node_field_data_field_series_request_nid;
+    $is_premiere = 
+        isset($airing->field_field_is_show_premiere_date[0]['raw']['value']) ?
+        $airing->field_field_is_show_premiere_date[0]['raw']['value'] :
+        NULL;
+    $is_premiere = $is_premiere ? 'Y' : "N";   
+    $date_start = 
+        isset($airing->field_field_airing_date [0]['raw']['value']) ?
+        $airing->field_field_airing_date [0]['raw']['value'] :
+        NULL;
+    $date_end = 
+        isset($airing->field_field_airing_date [0]['raw']['value2']) ?
+        $airing->field_field_airing_date [0]['raw']['value2'] :
+        NULL;
+    $channel_tid = 
+        isset($airing->field_field_airing_channel [0]['raw']['tid']) ?
+        $airing->field_field_airing_channel [0]['raw']['tid'] :
+        NULL;
+    $term = entity_load_single('taxonomy_term', $channel_tid);
+    $channel = $term->name;
+    $live_source = 
+        isset($airing->field_field_live_source [0]['raw']['value']) ?
+        $airing->field_field_live_source [0]['raw']['value'] :
+        NULL;
+    $live_source = $live_source ? 'Y' : "N";
+
+    $show_nid = 
+        isset($airing->field_field_airing_show_ref [0]['raw']['target_id']) ?
+        $airing->field_field_airing_show_ref [0]['raw']['target_id'] :
+        NULL;
+    $show = $show_nid ? node_load($show_nid) : NULL;
+    $show_title = $show ? $show->title : "";
+    
+    
+    $timestamp = strtotime($date_start);
+    $timestamp = CM_SHOW_REQUEST_TIMEZONE_SHIFT ? 
+      ($timestamp + date('Z', $timestamp)) : $timestamp;
+    $date_start = date("Y-m-d H:i:s", $timestamp);
+
+    $timestamp = strtotime($date_end);
+    $timestamp = CM_SHOW_REQUEST_TIMEZONE_SHIFT ? 
+      ($timestamp + date('Z', $timestamp)) : $timestamp;
+    $date_end = date("Y-m-d H:i:s", $timestamp);
+
+
+    $airings[$i] = array (
+        'airing_id' => $airing_id,
+        'series_request_nid' => $sr_nid,
+        'is_premiere' => $is_premiere,
+        'date_start' => $date_start,  
+        'date_end' => $date_end,
+        'channel' => $channel,
+        'live_source' => $live_source,
+	'show_title' => $show_title,
+    );
+  
+  $i++;
+  }
+  return $airings;
+}
+
+function cm_series_request_get_other_scheduled_airings($project_nid, 
+						       $season_start){
+  $airings = array();
+
+  $view_airings = views_get_view(CM_AIRINGS_SCHEDULED_VIEW);
+  if (!$view_airings) {
+    drupal_set_message("Error Code 23289: Missing view:".
+                        CM_AIRINGS_SCHEDULED_VIEW, 'error');
+  return $airings;
+  }
+  $view_airings->set_arguments(array($project_nid));
+  $view_airings->execute('block_1');
+  $results = $view_airings->result;
+  
+  $i=0;
+  foreach ($results as $airing){
+
+    if (!isset($airing->airing_id)) {
+      continue;
+    }
+    $airing_id = $airing->airing_id;
+
+    $date_start = 
+        isset($airing->field_field_airing_date [0]['raw']['value']) ?
+        $airing->field_field_airing_date [0]['raw']['value'] :
+        NULL;
+    $airing_timestamp = strtotime($date_start);
+
+    $date_parts = explode('-', $season_start);
+    $season_timestamp = strtotime($date_parts[2]."-".$date_parts[0]."-".
+				  $date_parts[1]);
+    
+    if ($season_timestamp >= $airing_timestamp) {
+      continue;
+    }
+    
+    $date_end = 
+        isset($airing->field_field_airing_date [0]['raw']['value2']) ?
+        $airing->field_field_airing_date [0]['raw']['value2'] :
+        NULL;
+    $channel_tid = 
+        isset($airing->field_field_airing_channel [0]['raw']['tid']) ?
+        $airing->field_field_airing_channel [0]['raw']['tid'] :
+        NULL;
+    $term = entity_load_single('taxonomy_term', $channel_tid);
+    $channel = $term->name;
+
+    $show_nid = 
+        isset($airing->field_field_airing_show_ref [0]['raw']['target_id']) ?
+        $airing->field_field_airing_show_ref [0]['raw']['target_id'] :
+        NULL;
+    $show = $show_nid ? node_load($show_nid) : NULL;
+    $show_title = $show ? $show->title : "";
+    
+    $timestamp = strtotime($date_start);
+    $timestamp = CM_SHOW_REQUEST_TIMEZONE_SHIFT ? 
+      ($timestamp + date('Z', $timestamp)) : $timestamp;
+    $date_start = date("Y-m-d H:i:s", $timestamp);
+
+    $timestamp = strtotime($date_end);
+    $timestamp = CM_SHOW_REQUEST_TIMEZONE_SHIFT ? 
+      ($timestamp + date('Z', $timestamp)) : $timestamp;
+    $date_end = date("Y-m-d H:i:s", $timestamp);
+
+    $airings[$i] = array (
+        'airing_id' => $airing_id,
+        'date_start' => $date_start,  
+        'date_end' => $date_end,
+        'channel' => $channel,
+        'live_source' => $live_source,
+	'show_title' => $show_title,
+    );
+  
+  $i++;
+  }
+  return $airings;
+}
+
+/**
+ * Called from view: series_request_airings_scheduled
+ * Determine if the row is for the next season
+ *
+ * @param $view_season_start_date
+ *
+ * @return TRUE to remove row, FALSE to keep row
+ */
+function cm_series_request_remove_not_season_start_date($row) {
+  $nid = isset($row->nid) ? $row->nid : NULL;
+  $node = node_load($nid); 
+  $season_request_date = 
+      isset($node->field_season_request_dates[LANGUAGE_NONE][0]['value']) ?
+      $node->field_season_request_dates[LANGUAGE_NONE][0]['value'] :
+      NULL;
+  $season_request_start = date("Y-m-d", strtotime($season_request_date));
+  
+  $next_season = timespan_next(CM_SERIES_REQUEST_SEASON_TIMESPAN_NAME);
+  $season_start = date('Y-m-d', strtotime($next_season['start']));
+ 
+  // If the code returns TRUE the current row is removed from the results.
+  if ($season_request_start == $season_start) {
+    return FALSE;
+  }
+  else {
+    return TRUE;
+  }
+}
+
+/**
+ * Returns the number of active sereies requests for a project
+ *
+ * @param array $project_nid
+ *
+ * @return int
+ */
+function cm_series_request_count_for_project($project_nid) {
+    $sql = "
+        SELECT count(*)
+            FROM field_data_field_request_project as ref
+            INNER JOIN field_data_field_project_status status
+                    ON ref.field_request_project_target_id = status.entity_id   
+            WHERE ref.field_request_project_target_id = :project_nid
+                    and ref.bundle = :bundle
+                    and ref.entity_type = :type
+                    and status.field_project_status_value = :project_status
+    ";
+ 
+    $args = array(
+      ':project_nid' => $project_nid,
+      ':bundle' => 'series_request',
+      ':type' => 'node',
+      ':project_status' => 'Active',
+    );
+
+    $result = db_query($sql, $args);
+    $count = $result->fetchField();
+    return $count;
+}
+
+/**
+ * Returns the type of the project
+ *
+ * @param array $project_nid
+ *
+ * @return $type string
+ */
+function cm_series_request_get_project_status($project_nid) {
+
+    $sql = "
+        SELECT field_project_status_value
+            FROM {field_data_field_project_status} s
+            WHERE s.entity_id = :project_nid
+                    and s.bundle = :bundle
+                    and s.entity_type = :type
+    ";  
+
+    $args = array(
+      ':project_nid' => $project_nid,
+      ':bundle' => 'cm_project',
+      ':type' => 'node',
+    );
+
+
+
+    $result = db_query($sql, $args);
+    $status = $result->fetchField();
+    return $status;
+}
+
+/**
+ * Returns the type of the project
+ *
+ * @param array $project_nid
+ *
+ * @return $type string
+ */
+function cm_series_request_get_project_type($project_nid) {
+    $sql = "
+        SELECT term.name
+            FROM taxonomy_term_data as term
+            INNER JOIN field_data_field_cm_project_types types
+                    ON types.field_cm_project_types_tid = term.tid
+            WHERE types.entity_id = :project_nid
+                    and types.bundle = :bundle
+                    and types.entity_type = :type
+    ";  
+
+    $args = array(
+      ':project_nid' => $project_nid,
+      ':bundle' => 'cm_project',
+      ':type' => 'node',
+    );
+
+
+
+    $result = db_query($sql, $args);
+    $type = $result->fetchField();
+    return $type;
+}
+
+function cm_series_request_check_scheduled_combo($form_state, $form) {
+  
+  /*$request_source = NULL;
+  $request_channel = 814;
+  $request_day = "Thursday";
+  $request_time = '9:00pm';
+  $request_runtime = 827;*/
+
+  $combo_error = array();
+  $error_msg = array();
+  $runtime = isset($form_state['values']['field_runtime_default']
+        [LANGUAGE_NONE][0]['tid']) 
+    ? $form_state['values']['field_runtime_default'][LANGUAGE_NONE][0]['tid'] 
+    : NULL;
+  
+  if ($runtime == NULL) {
+      $combo_error['error'] = 'Runtime is required.';
+      $combo_error['name'] = 'field_runtime_default';
+      return $combo_error;
+  }
+  
+  $row_index = 0;
+  for ($i = 0 ; $i <=5; $i++) {
+    if (isset($form_state['values']['field_series_request_admin']
+                [LANGUAGE_NONE][$i])) {
+      
+      $row_array = $form_state['values']['field_series_request_admin']
+          [LANGUAGE_NONE][$i];
+      
+      $request_source = 
+          isset($row_array['field_live_source'][LANGUAGE_NONE][0]['value']) ?
+          $row_array['field_live_source'][LANGUAGE_NONE][0]['value'] : NULL;
+      
+      $request_channel = 
+          isset($row_array['field_airing_channel'][LANGUAGE_NONE][0]['tid']) ?
+          $row_array['field_airing_channel'][LANGUAGE_NONE][0]['tid'] : NULL;
+      
+      $request_day = 
+          isset($row_array['field_start_day'][LANGUAGE_NONE][0]['value']) ?
+          $row_array['field_start_day'][LANGUAGE_NONE][0]['value'] : NULL;
+      
+      $request_time = isset($row_array['field_start_time']
+              [LANGUAGE_NONE][0]['value']) ?
+          $row_array['field_start_time'][LANGUAGE_NONE][0]['value'] : 
+          NULL;
+      
+      if (!$request_channel && !$request_day && !$request_time) {
+        continue;
+      }  
+
+      $row_index = $row_index + 1;
+      
+      // saved original values
+      $source = (isset($form['field_series_request_admin_hidden']
+              [$i]['source']['#value'])) ?
+          $form['field_series_request_admin_hidden'][$i]['source']['#value'] :
+          NULL;
+      $channel = (isset($form['field_series_request_admin_hidden']
+              [$i]['channel']['#value'])) ?
+          $form['field_series_request_admin_hidden'][$i]['channel']['#value'] :
+          NULL; 
+      $day = (isset($form['field_series_request_admin_hidden']
+             [$i]['day']['#value'])) ?
+         $form['field_series_request_admin_hidden'][$i]['day']['#value'] :
+         NULL;        
+      $time = (isset($form['field_series_request_admin_hidden']
+             [$i]['time']['#value'])) ?
+         $form['field_series_request_admin_hidden'][$i]['time']['#value'] :
+         NULL;
+      
+      // if my saved source/day or channel/day are the same as those requested
+      // then use the saved time (this is in the approved slot and want it in
+      // the ok array)
+      // if my saved source/day or channel/day are different then use a NULL
+      // time so that the overlap times end up in neg array
+      // the exception is when the form was not previously saved as approved
+      if ($form['field_series_request_status_hidden']['#value'] != 'Approved') {
+        $send_time = NULL;
+      }
+      else {
+        $day_value = strpos($day, 'Week') ?
+            substr($day, 0,  strpos($day, ' -- Week')) : $day;
+        $request_day_value = strpos($request_day, 'Week') ?
+            substr($request_day, 0,  strpos($request_day, ' -- Week')) : $request_day;
+
+        if (($source == $request_source && $day_value == $request_day_value) ||
+            ($channel == $request_channel && $day_value == $request_day_value)) {
+          $send_time = $time;
+        }
+        else {
+          $send_time = NULL;
+        }
+      }
+      
+      // get available times - do not include the time you want
+      $available_times = cm_series_request_get_start_time_dropdown_values(
+                    $request_source, 
+                    $request_channel, 
+                    $request_day,
+                    $send_time,
+                    $runtime); 
+
+      // now see if requested time is in the available time slots
+      $outputArray = 
+          cm_series_request_search_array(
+              $available_times, 'time', $request_time);
+      
+      // if the requested time is not found in the available slots
+      if (!$outputArray) {
+        $error_msg[] = $row_index;
+      }
+    } 
+    else {
+      continue;
+    }
+  }
+  
+  if (!empty ( $error_msg )) {
+    $error = "Your scheduled rows contain slot(s) that conflict with ".
+        "approved slot(s) on an existing series request. Please reschedule ".
+        "one or more of your rows. SCHEDULING ERRORS IN ROW(S): ";         
+    foreach ($error_msg as $msg) {
+      $error = $error . $msg . ", ";
+    }
+    $error = substr($error, 0, -2);
+    $error = $error . ".";
+    $name = 'field_series_request_admin';
+  }
+  
+  $combo_error['error'] = (isset($error)) ? $error : NULL;
+  $combo_error['name'] = (isset($name)) ? $name : NULL;
+ 
+  return $combo_error;
+ 
+}
+
+/*
+ * Search for a value/key within a multidimensional array
+ */
+function cm_series_request_search_array($array, $key, $value)
+{
+    $results = array();
+    cm_series_request_search_r($array, $key, $value, $results);
+    return $results;
+}
+
+function cm_series_request_search_r($array, $key, $value, &$results)
+{
+    if (!is_array($array)) {
+        return;
+    }
+
+    if (isset($array[$key]) && $array[$key] == $value) {
+        $results[] = $array;
+    }
+
+    foreach ($array as $subarray) {
+        cm_series_request_search_r($subarray, $key, $value, $results);
+    }
+}
+
+function cm_series_request_create_hidden_fields_alter_form(&$form) {
+  
+  // capture status in hidden field
+  $status = isset($form['field_series_request_status'][LANGUAGE_NONE]
+    ['#default_value'][0]) ?
+    $form['field_series_request_status'][LANGUAGE_NONE]['#default_value'][0] :
+    NULL;
+
+  $form['field_series_request_status_hidden'] = 
+      array('#type' => 'hidden', '#value' => $status);
+
+  // create hidden scheduling fields - used for validation of scheduling fields
+  for ($i = 0 ; $i <=5; $i++) {
+    
+    if (isset($form['field_series_request_admin'][LANGUAGE_NONE][$i])) {
+      
+      $row_array = $form['field_series_request_admin'][LANGUAGE_NONE][$i];
+      
+      $source = 
+          isset($row_array['field_live_source']
+              [LANGUAGE_NONE]['#default_value'][0]) ?
+          $row_array['field_live_source']
+              [LANGUAGE_NONE]['#default_value'][0] :
+          NULL;
+      
+      $channel = 
+          isset($row_array['field_airing_channel']
+              [LANGUAGE_NONE]['#default_value'][0]) ?
+          $row_array['field_airing_channel']
+              [LANGUAGE_NONE]['#default_value'][0] :
+          NULL;
+      
+      $day = 
+          isset($row_array['field_start_day']
+              [LANGUAGE_NONE]['#default_value'][0]) ?
+          $row_array['field_start_day']
+              [LANGUAGE_NONE]['#default_value'][0] : 
+          NULL;
+      
+      $time = isset($row_array['field_start_time']
+              [LANGUAGE_NONE]['#default_value'][0]) ?
+          $row_array['field_start_time']
+              [LANGUAGE_NONE]['#default_value'][0] : 
+          NULL;
+      
+      if ($channel && $day && $time) {
+          $form['field_series_request_admin_hidden'][$i]['source'] = 
+                array('#type' => 'hidden', '#value' => $source);
+          $form['field_series_request_admin_hidden'][$i]['channel'] = 
+                array('#type' => 'hidden', '#value' => $channel);
+          $form['field_series_request_admin_hidden'][$i]['day'] = 
+                array('#type' => 'hidden', '#value' => $day);
+          $form['field_series_request_admin_hidden'][$i]['time'] = 
+                array('#type' => 'hidden', '#value' => $time);
+      }
+      else {
+        continue;
+      }
+    }
+  }
+  return 0;
+}
+
+function cm_series_request_convert_startday_to_datetime(
+                              $season_start, $start_day, $time) {
+ 
+//$slot = $start_day . " @ " . $time . " = ";  
+ 
+  $day_parts = explode(" -- Week ", $start_day);
+  $day_of_week = $day_parts[0];
+  $week_number = isset($day_parts[1]) ?  $day_parts[1] : 1;  
+  
+  $time = strtotime(date('Y-m-d', $season_start)." ".$time);
+  
+      for ($i=1; $i<=7; $i++) {
+        if ($day_of_week == date('l',$time)) {
+          for ($j=1; $j<=4; $j++) {
+            if ($j == $week_number) {
+              break;
+            }
+            $time = cm_series_request_add_to_date($time, 'week', 1);
+          }
+          break;
+        }
+        $time = cm_series_request_add_to_date($time, 'day', 1);
+      }
+  
+  return $time;
+}
